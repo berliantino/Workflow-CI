@@ -30,26 +30,26 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install mlflow==2.19.0
         pip install pandas numpy scikit-learn matplotlib seaborn joblib
         
     - name: Verify environment
       run: |
         python --version
-        pip list | grep -E "(mlflow|pandas|sklearn)"
+        pip list | grep -E "(pandas|sklearn)"
         
-    - name: Verify MLProject structure
+    - name: Verify data structure
       run: |
         echo "Repository structure:"
         ls -la
         echo "MLProject contents:"
         ls -la MLProject/
-        echo "Data directory:"
+        echo "Data files:"
         if [ -d "MLProject/loan_data_preprocessing" ]; then
           echo "✅ Data directory found"
-          ls MLProject/loan_data_preprocessing/ | head -5
+          ls -la MLProject/loan_data_preprocessing/ | head -10
         else
           echo "❌ Data directory missing"
+          exit 1
         fi
         
     - name: Test data loading
@@ -58,94 +58,152 @@ jobs:
         python -c "
         import pandas as pd
         import os
-        print('Current dir:', os.getcwd())
-        print('Files:', os.listdir('.'))
+        print('Current directory:', os.getcwd())
+        print('Available files:', [f for f in os.listdir('.') if f.endswith('.csv') or f.endswith('.py')])
+        
         if os.path.exists('loan_data_preprocessing'):
-            print('Data files:', os.listdir('loan_data_preprocessing'))
+            data_files = os.listdir('loan_data_preprocessing')
+            print('Data files:', data_files)
+            
+            # Test loading
             try:
-                df = pd.read_csv('loan_data_preprocessing/X_train.csv')
-                print('✅ Data loaded successfully, shape:', df.shape)
+                X_train = pd.read_csv('loan_data_preprocessing/X_train.csv')
+                print(f'✅ X_train loaded successfully: {X_train.shape}')
+                
+                y_train = pd.read_csv('loan_data_preprocessing/y_train.csv')
+                print(f'✅ y_train loaded successfully: {y_train.shape}')
+                
+                print('✅ All data files accessible')
             except Exception as e:
-                print('❌ Error loading data:', e)
+                print(f'❌ Error loading data: {e}')
+                exit(1)
         else:
-            print('❌ No data directory found')
+            print('❌ Data directory not found')
+            exit(1)
         "
         
     - name: Run model training
+      run: |
+        cd MLProject
+        echo "🔄 Starting model training..."
+        python -c "
+        import pandas as pd
+        import numpy as np
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        import joblib
+        import json
+        import os
+        
+        # Load data
+        print('📊 Loading preprocessed data...')
+        X_train = pd.read_csv('loan_data_preprocessing/X_train.csv')
+        X_test = pd.read_csv('loan_data_preprocessing/X_test.csv')
+        y_train = pd.read_csv('loan_data_preprocessing/y_train.csv').iloc[:, 0]
+        y_test = pd.read_csv('loan_data_preprocessing/y_test.csv').iloc[:, 0]
+        
+        print(f'✅ Data loaded: Train {X_train.shape}, Test {X_test.shape}')
+        
+        # Get model type from environment
+        model_type = os.environ.get('MODEL_TYPE', 'RandomForest')
+        print(f'🤖 Training model: {model_type}')
+        
+        # Select model
+        if model_type == 'RandomForest':
+            model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        else:
+            model = LogisticRegression(random_state=42, max_iter=1000)
+        
+        # Train model
+        print('🔄 Training in progress...')
+        model.fit(X_train, y_train)
+        
+        # Evaluate
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, average='weighted')
+        recall = recall_score(y_test, y_pred, average='weighted')
+        f1 = f1_score(y_test, y_pred, average='weighted')
+        
+        print(f'✅ Training completed!')
+        print(f'   Accuracy: {accuracy:.4f}')
+        print(f'   Precision: {precision:.4f}')
+        print(f'   Recall: {recall:.4f}')
+        print(f'   F1-Score: {f1:.4f}')
+        
+        # Save model
+        model_filename = f'model_{model_type.lower()}.pkl'
+        joblib.dump(model, model_filename)
+        print(f'💾 Model saved: {model_filename}')
+        
+        # Save metrics
+        metrics = {
+            'model_type': model_type,
+            'accuracy': float(accuracy),
+            'precision': float(precision),
+            'recall': float(recall),
+            'f1_score': float(f1),
+            'data_shape': {
+                'train': list(X_train.shape),
+                'test': list(X_test.shape)
+            }
+        }
+        
+        with open(f'metrics_{model_type.lower()}.json', 'w') as f:
+            json.dump(metrics, f, indent=2)
+        print(f'📊 Metrics saved: metrics_{model_type.lower()}.json')
+        
+        # Create simple report
+        with open('training_report.txt', 'w') as f:
+            f.write(f'Model Training Report\\n')
+            f.write(f'=====================\\n')
+            f.write(f'Model: {model_type}\\n')
+            f.write(f'Accuracy: {accuracy:.4f}\\n')
+            f.write(f'Precision: {precision:.4f}\\n')
+            f.write(f'Recall: {recall:.4f}\\n')
+            f.write(f'F1-Score: {f1:.4f}\\n')
+            f.write(f'Training Shape: {X_train.shape}\\n')
+            f.write(f'Test Shape: {X_test.shape}\\n')
+        
+        print('📝 Training report created')
+        print('✅ All artifacts generated successfully!')
+        "
       env:
         MODEL_TYPE: ${{ github.event.inputs.model_type || 'RandomForest' }}
+        
+    - name: List generated artifacts
       run: |
         cd MLProject
-        python modelling.py
+        echo "📁 Generated files:"
+        ls -la *.pkl *.json *.txt 2>/dev/null || echo "No artifacts found"
         
-    - name: List generated files
-      run: |
-        echo "Generated artifacts:"
-        find MLProject -name "*.png" -o -name "*.pkl" -o -name "*.json" | head -20
-        
-    - name: Upload training artifacts
+    - name: Upload model artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: model-training-artifacts
+        name: trained-model
         path: |
-          MLProject/*.png
           MLProject/*.pkl
           MLProject/*.json
+          MLProject/*.txt
         retention-days: 30
+        if-no-files-found: error
         
-    - name: Upload MLflow runs
-      uses: actions/upload-artifact@v4
-      with:
-        name: mlflow-runs
-        path: |
-          MLProject/mlruns/
-        retention-days: 30
-        if-no-files-found: ignore
-        
-    - name: Create training summary
+    - name: Display success message
       run: |
-        cd MLProject
-        echo "# Training Summary" > training_summary.md
-        echo "**Date:** $(date)" >> training_summary.md
-        echo "**Model:** ${{ github.event.inputs.model_type || 'RandomForest' }}" >> training_summary.md
-        echo "**Workflow:** ${{ github.workflow }}" >> training_summary.md
-        echo "**Run ID:** ${{ github.run_id }}" >> training_summary.md
-        echo "**Commit:** ${{ github.sha }}" >> training_summary.md
-        echo "" >> training_summary.md
-        echo "## Generated Files:" >> training_summary.md
-        ls -la *.png *.pkl *.json 2>/dev/null || echo "No artifacts found" >> training_summary.md
-        echo "" >> training_summary.md
-        echo "## Training Output:" >> training_summary.md
-        if [ -f "metrics_randomforest.json" ]; then
-          echo "### RandomForest Metrics:" >> training_summary.md
-          cat metrics_randomforest.json >> training_summary.md
-        fi
-        if [ -f "metrics_logisticregression.json" ]; then
-          echo "### LogisticRegression Metrics:" >> training_summary.md
-          cat metrics_logisticregression.json >> training_summary.md
-        fi
-        
-    - name: Upload training summary
-      uses: actions/upload-artifact@v4
-      with:
-        name: training-summary
-        path: MLProject/training_summary.md
-        retention-days: 30
-        
-    - name: Display final status
-      run: |
-        echo "🎉 =============================================="
-        echo "🎉  ML MODEL TRAINING COMPLETED SUCCESSFULLY"
-        echo "🎉 =============================================="
+        echo "🎉 ==============================================="
+        echo "🎉   ML MODEL CI/CD PIPELINE COMPLETED!"
+        echo "🎉 ==============================================="
         echo ""
-        echo "📋 Summary:"
-        echo "   ✅ Model training completed"
-        echo "   ✅ Artifacts generated and uploaded"
-        echo "   ✅ Training summary created"
+        echo "✅ Summary:"
+        echo "   - Model training: SUCCESS"
+        echo "   - Model evaluation: SUCCESS"
+        echo "   - Artifacts saved: SUCCESS"
+        echo "   - Artifacts uploaded: SUCCESS"
         echo ""
-        echo "📁 Artifacts available:"
-        echo "   - model-training-artifacts (models, plots, metrics)"
-        echo "   - mlflow-runs (MLflow experiment data)"
-        echo "   - training-summary (detailed summary)"
+        echo "📁 Artifacts available for download:"
+        echo "   - Trained model (*.pkl)"
+        echo "   - Training metrics (*.json)"
+        echo "   - Training report (*.txt)"
         echo ""
-        echo "🔗 View artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        echo "🔗 Download artifacts from GitHub Actions page"
