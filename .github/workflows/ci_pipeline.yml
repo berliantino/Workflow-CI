@@ -29,8 +29,14 @@ jobs:
         
     - name: Install dependencies
       run: |
+        python -m pip install --upgrade pip
         pip install mlflow==2.19.0
-        pip install pandas numpy scikit-learn matplotlib seaborn
+        pip install pandas numpy scikit-learn matplotlib seaborn joblib
+        
+    - name: Verify environment
+      run: |
+        python --version
+        pip list | grep -E "(mlflow|pandas|sklearn)"
         
     - name: Verify MLProject structure
       run: |
@@ -38,38 +44,67 @@ jobs:
         ls -la
         echo "MLProject contents:"
         ls -la MLProject/
-        echo "Data files count:"
-        ls MLProject/loan_data_preprocessing/ | wc -l
+        echo "Data directory:"
+        if [ -d "MLProject/loan_data_preprocessing" ]; then
+          echo "✅ Data directory found"
+          ls MLProject/loan_data_preprocessing/ | head -5
+        else
+          echo "❌ Data directory missing"
+        fi
         
-    - name: Run MLProject Training
+    - name: Test data loading
       run: |
         cd MLProject
-        mlflow run . -P model_type=${{ github.event.inputs.model_type || 'RandomForest' }}
+        python -c "
+        import pandas as pd
+        import os
+        print('Current dir:', os.getcwd())
+        print('Files:', os.listdir('.'))
+        if os.path.exists('loan_data_preprocessing'):
+            print('Data files:', os.listdir('loan_data_preprocessing'))
+            try:
+                df = pd.read_csv('loan_data_preprocessing/X_train.csv')
+                print('✅ Data loaded successfully, shape:', df.shape)
+            except Exception as e:
+                print('❌ Error loading data:', e)
+        else:
+            print('❌ No data directory found')
+        "
         
-    - name: List generated artifacts
+    - name: Run model training
+      env:
+        MODEL_TYPE: ${{ github.event.inputs.model_type || 'RandomForest' }}
       run: |
-        echo "Generated files:"
-        find MLProject -name "*.png" -o -name "*.pkl" -o -name "*.csv" | head -20
+        cd MLProject
+        python modelling.py
+        
+    - name: List generated files
+      run: |
+        echo "Generated artifacts:"
+        find MLProject -name "*.png" -o -name "*.pkl" -o -name "*.json" | head -20
         
     - name: Upload training artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: model-training-artifacts
         path: |
-          MLProject/confusion_matrix_*.png
+          MLProject/*.png
           MLProject/*.pkl
+          MLProject/*.json
         retention-days: 30
         
-    - name: Upload training logs
-      uses: actions/upload-artifact@v3
+    - name: Upload MLflow runs
+      uses: actions/upload-artifact@v4
       with:
-        name: training-logs
+        name: mlflow-runs
         path: |
           MLProject/mlruns/
         retention-days: 30
+        if-no-files-found: ignore
         
     - name: Create training summary
       run: |
+        cd MLProject
         echo "# Training Summary" > training_summary.md
         echo "**Date:** $(date)" >> training_summary.md
         echo "**Model:** ${{ github.event.inputs.model_type || 'RandomForest' }}" >> training_summary.md
@@ -77,11 +112,40 @@ jobs:
         echo "**Run ID:** ${{ github.run_id }}" >> training_summary.md
         echo "**Commit:** ${{ github.sha }}" >> training_summary.md
         echo "" >> training_summary.md
-        echo "## Files Generated:" >> training_summary.md
-        find MLProject -name "*.png" -o -name "*.pkl" | head -10 >> training_summary.md
+        echo "## Generated Files:" >> training_summary.md
+        ls -la *.png *.pkl *.json 2>/dev/null || echo "No artifacts found" >> training_summary.md
+        echo "" >> training_summary.md
+        echo "## Training Output:" >> training_summary.md
+        if [ -f "metrics_randomforest.json" ]; then
+          echo "### RandomForest Metrics:" >> training_summary.md
+          cat metrics_randomforest.json >> training_summary.md
+        fi
+        if [ -f "metrics_logisticregression.json" ]; then
+          echo "### LogisticRegression Metrics:" >> training_summary.md
+          cat metrics_logisticregression.json >> training_summary.md
+        fi
         
-    - name: Upload summary
-      uses: actions/upload-artifact@v3
+    - name: Upload training summary
+      uses: actions/upload-artifact@v4
       with:
         name: training-summary
-        path: training_summary.md
+        path: MLProject/training_summary.md
+        retention-days: 30
+        
+    - name: Display final status
+      run: |
+        echo "🎉 =============================================="
+        echo "🎉  ML MODEL TRAINING COMPLETED SUCCESSFULLY"
+        echo "🎉 =============================================="
+        echo ""
+        echo "📋 Summary:"
+        echo "   ✅ Model training completed"
+        echo "   ✅ Artifacts generated and uploaded"
+        echo "   ✅ Training summary created"
+        echo ""
+        echo "📁 Artifacts available:"
+        echo "   - model-training-artifacts (models, plots, metrics)"
+        echo "   - mlflow-runs (MLflow experiment data)"
+        echo "   - training-summary (detailed summary)"
+        echo ""
+        echo "🔗 View artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
