@@ -1,0 +1,87 @@
+﻿name: ML Model CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      model_type:
+        description: 'Model type to train'
+        required: true
+        default: 'RandomForest'
+        type: choice
+        options:
+        - RandomForest
+        - LogisticRegression
+
+jobs:
+  basic_training:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        pip install mlflow==2.19.0
+        pip install pandas numpy scikit-learn matplotlib seaborn
+        
+    - name: Verify MLProject structure
+      run: |
+        echo "Repository structure:"
+        ls -la
+        echo "MLProject contents:"
+        ls -la MLProject/
+        echo "Data files count:"
+        ls MLProject/loan_data_preprocessing/ | wc -l
+        
+    - name: Run MLProject Training
+      run: |
+        cd MLProject
+        mlflow run . -P model_type=${{ github.event.inputs.model_type || 'RandomForest' }}
+        
+    - name: List generated artifacts
+      run: |
+        echo "Generated files:"
+        find MLProject -name "*.png" -o -name "*.pkl" -o -name "*.csv" | head -20
+        
+    - name: Upload training artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: model-training-artifacts
+        path: |
+          MLProject/confusion_matrix_*.png
+          MLProject/*.pkl
+        retention-days: 30
+        
+    - name: Upload training logs
+      uses: actions/upload-artifact@v3
+      with:
+        name: training-logs
+        path: |
+          MLProject/mlruns/
+        retention-days: 30
+        
+    - name: Create training summary
+      run: |
+        echo "# Training Summary" > training_summary.md
+        echo "**Date:** $(date)" >> training_summary.md
+        echo "**Model:** ${{ github.event.inputs.model_type || 'RandomForest' }}" >> training_summary.md
+        echo "**Workflow:** ${{ github.workflow }}" >> training_summary.md
+        echo "**Run ID:** ${{ github.run_id }}" >> training_summary.md
+        echo "**Commit:** ${{ github.sha }}" >> training_summary.md
+        echo "" >> training_summary.md
+        echo "## Files Generated:" >> training_summary.md
+        find MLProject -name "*.png" -o -name "*.pkl" | head -10 >> training_summary.md
+        
+    - name: Upload summary
+      uses: actions/upload-artifact@v3
+      with:
+        name: training-summary
+        path: training_summary.md

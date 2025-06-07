@@ -1,0 +1,9 @@
+﻿name: loan_approval_ci_project
+
+conda_env: conda.yaml
+
+entry_points:
+  main:
+    parameters:
+      model_type: {type: string, default: "RandomForest"}
+    command: "python modelling.py"
